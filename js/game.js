@@ -60,11 +60,89 @@ let blackShurikenTimers = new Map();
 let shurikenSpawnTimer = 0;
 let sushiSpawnTimer = 0;
 
+// Camera/viewport for mobile zoom
+let isMobile = false;
+let cameraX = CANVAS_WIDTH / 2;
+let cameraY = CANVAS_HEIGHT / 2;
+const MOBILE_ZOOM = 1.8; // How much to zoom in on mobile
+
+// Zen activation effect
+let zenEffects = []; // Array of expanding circles
+
 // Get base spawn interval based on game time
 function getSpawnInterval() {
     // Start at 1.5 seconds, decrease to minimum of 0.2 seconds
     const baseInterval = Math.max(0.2, 1.5 - gameTime / 30);
     return baseInterval;
+}
+
+// Detect mobile device
+function detectMobile() {
+    return window.innerWidth <= 900 && window.innerHeight <= 500;
+}
+
+// Update camera to follow ninja (for mobile zoom)
+function updateCamera() {
+    if (!ninja) return;
+
+    // Smoothly follow ninja
+    const followSpeed = 0.1;
+    cameraX += (ninja.x - cameraX) * followSpeed;
+    cameraY += (ninja.y - cameraY) * followSpeed;
+
+    // Clamp camera to keep view within bounds (with some margin)
+    if (isMobile) {
+        const viewWidth = CANVAS_WIDTH / MOBILE_ZOOM;
+        const viewHeight = CANVAS_HEIGHT / MOBILE_ZOOM;
+        const margin = 20;
+
+        cameraX = Math.max(viewWidth / 2 - margin, Math.min(CANVAS_WIDTH - viewWidth / 2 + margin, cameraX));
+        cameraY = Math.max(viewHeight / 2 - margin, Math.min(CANVAS_HEIGHT - viewHeight / 2 + margin, cameraY));
+    }
+}
+
+// Zen activation effect - expanding circle
+class ZenCircle {
+    constructor(x, y, delay) {
+        this.x = x;
+        this.y = y;
+        this.radius = 0;
+        this.maxRadius = 150;
+        this.alpha = 1;
+        this.delay = delay;
+        this.started = false;
+    }
+
+    update(dt) {
+        if (this.delay > 0) {
+            this.delay -= dt;
+            return true;
+        }
+        this.started = true;
+        this.radius += 200 * dt;
+        this.alpha = Math.max(0, 1 - this.radius / this.maxRadius);
+        return this.alpha > 0;
+    }
+
+    draw() {
+        if (!this.started) return;
+        ctx.save();
+        ctx.strokeStyle = `rgba(255, 215, 0, ${this.alpha})`;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = 'gold';
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+// Trigger zen activation effect
+function triggerZenEffect(x, y) {
+    zenEffects.push(new ZenCircle(x, y, 0));
+    zenEffects.push(new ZenCircle(x, y, 0.1));
+    zenEffects.push(new ZenCircle(x, y, 0.2));
 }
 
 // Ninja class
@@ -1059,6 +1137,20 @@ function gameLoop(currentTime) {
         }
     }
 
+    // Update zen effects
+    zenEffects = zenEffects.filter(effect => effect.update(dt));
+
+    // Update camera for mobile
+    updateCamera();
+
+    // Apply camera transform for mobile zoom
+    ctx.save();
+    if (isMobile) {
+        ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+        ctx.scale(MOBILE_ZOOM, MOBILE_ZOOM);
+        ctx.translate(-cameraX, -cameraY);
+    }
+
     // Draw everything
     drawDojo();
 
@@ -1085,6 +1177,11 @@ function gameLoop(currentTime) {
     // Draw ninja
     ninja.draw();
 
+    // Draw zen activation effects
+    for (const effect of zenEffects) {
+        effect.draw();
+    }
+
     // Draw FOV overlay
     drawFOV();
 
@@ -1092,6 +1189,9 @@ function gameLoop(currentTime) {
     if (gameState === 'zen-select') {
         drawZenSelection();
     }
+
+    // Restore camera transform
+    ctx.restore();
 }
 
 // Handle input (click or touch)
@@ -1099,8 +1199,15 @@ function handleInput(clientX, clientY) {
     if (gameState !== 'playing' && gameState !== 'zen-select') return;
 
     const rect = canvas.getBoundingClientRect();
-    const x = (clientX - rect.left) * (CANVAS_WIDTH / rect.width);
-    const y = (clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+    let x = (clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+    let y = (clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+
+    // Convert screen coordinates to world coordinates if zoomed (mobile)
+    if (isMobile) {
+        // Reverse the camera transform
+        x = (x - CANVAS_WIDTH / 2) / MOBILE_ZOOM + cameraX;
+        y = (y - CANVAS_HEIGHT / 2) / MOBILE_ZOOM + cameraY;
+    }
 
     if (gameState === 'zen-select') {
         // Add point to zen path
@@ -1118,6 +1225,7 @@ function handleInput(clientX, clientY) {
 
     if (dist < NINJA_RADIUS + 20 && sushiCount >= 3 && !zenExecuting) {
         // Activate zen mode (larger touch area on mobile)
+        triggerZenEffect(ninja.x, ninja.y); // Cool activation effect
         zenMode = true;
         gameState = 'zen-select';
         zenTimer = 4;
@@ -1156,6 +1264,9 @@ canvas.addEventListener('touchend', (e) => {
 
 // Start/restart game
 function startGame() {
+    // Detect mobile for camera zoom
+    isMobile = detectMobile();
+
     gameState = 'playing';
     gameTime = 0;
     score = 0;
@@ -1173,6 +1284,11 @@ function startGame() {
     zenPoints = [];
     zenExecuting = false;
     zenPath = [];
+    zenEffects = [];
+
+    // Reset camera to ninja position
+    cameraX = CANVAS_WIDTH / 2;
+    cameraY = CANVAS_HEIGHT / 2;
 
     shurikenSpawnTimer = 1;
     sushiSpawnTimer = 3;
@@ -1192,6 +1308,11 @@ function startGame() {
 // Event listeners
 document.getElementById('start-btn').addEventListener('click', startGame);
 document.getElementById('restart-btn').addEventListener('click', startGame);
+
+// Handle window resize to detect mobile state changes
+window.addEventListener('resize', () => {
+    isMobile = detectMobile();
+});
 
 // Start the game loop
 requestAnimationFrame(gameLoop);
